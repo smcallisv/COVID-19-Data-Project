@@ -1,0 +1,264 @@
+---
+title: "COVID-19 Data Project"
+author: "Stuart McAllister"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r load_libraries}
+# Load libraries
+library(tidyverse)
+library(magrittr)
+library(lubridate)
+```
+
+# Project Step 1: Import Relevant Dataset
+
+To begin we will import the COVID19 global time series dataset from the John Hopkins University Github website. This data shows reported cases and deaths for reporting nations from Jan 22, 2020 until March 9, 2023. There is another optional file related to recovered cases which we will not include in this analysis. 
+
+This analysis will focus on the global data, specifically subsetting the information presented for the Central American countries. We will investigate the characteristics of both cases and deaths due to COVID-19 in the 7 Central American countries during the reported period of the provided dataset (Jan 22, 2020 - Mar 9, 2023) to see if we can identify any trends or opportunities for further research.
+
+```{r import_data}
+# Import COVID-19 dataset from CSSEGISandData on github
+url_in <- "https://github.com/CSSEGISandData/COVID-19/raw/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+# Identify individual COVID-19 csv files required
+file_names <- c("time_series_covid19_confirmed_global.csv",
+                "time_series_covid19_deaths_global.csv")
+urls <- str_c(url_in, file_names)
+
+# Import country data and clean for population values
+uid_lookup_url <- "https://github.com/CSSEGISandData/COVID-19/raw/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(uid_lookup_url) %>% 
+        select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+
+# Assign individual data files to variables
+global_cases <- read_csv(urls[1])
+global_deaths <- read_csv(urls[2])
+```
+
+# Project Step 2: Tidy and Transform Data
+
+```{r check_data}
+# Review the first rows of each dataset to understand what actions need
+# to be taken to clean the data
+head(global_cases)
+head(global_deaths)
+head(uid)
+```
+
+The following steps are used to clean the datasets for our use in this analysis:
+
+1. It appears that in both the global_cases and global_deaths datasets each date is given a column. We would like to convert these through the pivot_longer() function in order to see each date entry for each nation as a single entry.
+
+2. There are also columns for Latitude and Longitude values which we will not need for this investigation
+
+3. We will then join the datasets for both deaths and cases together into one single dataset.
+
+4. Dates are mutated using the lubridate package for ease of use in time-series analysis.
+
+5. A Combined_Key variable is created in this new table which represents a combination of both Province_State and Country_Region. NA values are removed at this point as well.
+
+6. The uid dataset contains country population values and will be joined with the now larger global dataset containing both COVID19 reported deaths and cases.
+
+```{r clean_global_data}
+# Clean individual global datasets by using pivot_longer and removing
+# the Latitude and Longitude values
+global_cases <- global_cases %>% 
+      pivot_longer(cols = -c("Province/State", "Country/Region", Lat, Long),
+                          names_to = "date",
+                          values_to = "cases") %>% 
+                          select(-c(Lat, Long))
+
+global_deaths <- global_deaths %>% 
+      pivot_longer(cols = -c("Province/State", "Country/Region", Lat, Long),
+                          names_to = "date",
+                          values_to = "deaths") %>% 
+                          select(-c(Lat, Long))
+
+# Join the data from global_cases and global_deaths. Rename Country/Region
+# and Province/State to maintain a consistent format of column names. Change
+# date format using lubridate for consistency and ease of use
+global <- global_cases %>% 
+            full_join(global_deaths) %>% 
+            rename(Country_Region = "Country/Region",
+            Province_State = "Province/State") %>% 
+            mutate(date = mdy(date))
+
+# Filter for data points with cases greater than 0
+global <- global %>% filter(cases > 0)
+
+# Create Combined_Key to match other datasets
+global <- global %>% 
+            unite("Combined_Key", c(Province_State, Country_Region),
+            sep = ", ",
+            na.rm = TRUE,
+            remove = FALSE)
+
+# Join global data with uid dataset to include population values
+global <- global %>% 
+           left_join(uid, by = c("Province_State", "Country_Region")) %>% 
+           select(-c(UID, FIPS)) %>% 
+           select(Province_State, Country_Region, date, cases, deaths,
+                  Population,Combined_Key)
+
+# Show first rows of cleaned global data
+head(global)
+```
+
+
+
+# Project Step 3: Visualization and Analysis
+
+To continue, we will filter the global data to focus only the Central American countries and their reported experiences during the COVID19 pandemic.
+
+```{r filter_central_america}
+# Filter the global dataset to create a subset for all of the
+# Central American countries
+global.cam <- global %>% 
+                  filter(Country_Region == 'Panama' | 
+                         Country_Region == 'El Salvador' |
+                         Country_Region == 'Costa Rica' | 
+                         Country_Region == 'Nicaragua' | 
+                         Country_Region == 'Honduras' | 
+                         Country_Region == 'Guatemala' |
+                         Country_Region == 'Belize' )
+head(global.cam)
+```
+
+
+Using this filtered dataset we will begin by plotting the number of cases per country in Central America over the time frame of the dataset. From this initial plot it can be seen that there is a significant difference in the number of cases, especially between Guatemala, Costa Rica, and Panama compared to the other four countries. In order to make these values more relatable between nations we will change these to per capita values, dividing by the population values shown in the second plot. Finally, we show the cases per capita values in the third plot for a comparative look at the tendency between countries.
+
+```{r plot1}
+# Create an initial plot of cases per country in Central America over
+# the time series of the dataset
+global.cam %>% ggplot(aes(x = date, y = (cases))) +
+                geom_smooth(aes(col = Country_Region)) +
+                labs(y = 'New Cases', x = 'Months') +
+                scale_x_date(date_breaks = "6 months", date_labels = "%b %y") +
+                theme_bw() +
+                theme(legend.position = "bottom", 
+                      plot.title = element_text(hjust = 0.5)) +
+                ggtitle("Covid-19 New Cases in Central America")
+
+# Group dataset by Country_Region and summarise with mean population
+pop_sum <- global.cam %>% 
+                  group_by(Country_Region) %>% 
+                  summarise(Mean_Population = (mean(Population)/1000000))
+pop_sum
+
+# Bar chart of mean population per Central American country
+pop_sum %>% ggplot(aes(x = Country_Region, y = Mean_Population,
+              fill = Country_Region)) +
+              geom_col(show.legend = FALSE) +
+              labs(y = 'Population (millions)', x = "Country") +
+              ggtitle("Population (millions) per Central American Country") +
+              theme_bw()
+
+# Recreate country case data plot, now using cases per person
+global.cam %>% ggplot(aes(x = date, y = (cases/Population))) +
+                geom_smooth(aes(col = Country_Region)) +
+                labs(y = 'New Cases', x = 'Months') +
+                scale_x_date(date_breaks = "6 months", date_labels = "%b %y") +
+                theme_bw() +
+                theme(legend.position = "bottom", 
+                      plot.title = element_text(hjust = 0.5)) +
+                ggtitle("Covid-19 New Cases in Central America Per Capita")
+
+```
+
+It is interesting that although some of the positions changed in the per capita plot there is still a wide gap between the top three nations (Panama, Costa Rica, and Belize) and the other four nations.
+
+We will now dive into the information for two of the countries, beginning with El Salvador, which is represented in the group with a lower per capita case rate. The follow this with the information for Cost Rica, which is in the higher case per capita group.
+
+For each we will plot cases and deaths over time to see the trends that developped.
+
+```{r plot_elsalvador}
+# Filter dataset to see only values for El Salvador
+global.sv <- global.cam %>% 
+                  filter(Country_Region == 'El Salvador')
+
+# Plot COVID-19 new cases and deaths over time for El Salvador
+global.sv %>% ggplot(aes(x = date)) +
+                geom_line(aes(y = cases, color = 'New Cases')) +
+                labs(y = 'New Cases', x = 'Months') +
+                geom_line(aes(y = deaths/0.025, color = 'Deaths')) +
+                scale_x_date(date_breaks = "6 months", date_labels = "%b %y") +
+                scale_y_continuous(sec.axis = sec_axis(~.*0.025, 
+                                                       name = "Deaths")) +
+                theme_bw() +
+                theme(legend.position = "bottom", 
+                      plot.title = element_text(hjust = 0.5)) +
+                scale_color_manual(name = "Covid Cases", 
+                                   values = c("firebrick1", "navy"), 
+                                   breaks = c("New Cases", "Deaths")) +
+                ggtitle("Covid-19 New Cases vs Deaths in El Salvador")
+```
+
+```{r plot_costarica}
+# Filter dataset to see only values for Costa Rica
+global.cr <- global.cam %>% 
+                  filter(Country_Region == 'Costa Rica')
+
+# Plot COVID-19 new cases and deaths over time for Costa Rica
+global.cr %>% ggplot(aes(x = date)) +
+                geom_line(aes(y = cases, color = 'New Cases')) +
+                labs(y = 'New Cases', x = 'Months') +
+                geom_line(aes(y = deaths/0.025, color = 'Deaths')) +
+                scale_x_date(date_breaks = "6 months", date_labels = "%b %y") +
+                scale_y_continuous(sec.axis = sec_axis(~.*0.025, 
+                                                       name = "Deaths")) +
+                theme_bw() +
+                theme(legend.position = "bottom", 
+                      plot.title = element_text(hjust = 0.5)) +
+                scale_color_manual(name = "Covid Cases", 
+                                   values = c("firebrick1", "navy"), 
+                                   breaks = c("New Cases", "Deaths")) +
+                ggtitle("Covid-19 New Cases vs Deaths in Costa Rica")
+```
+
+Finally, we will create linear models for each of the datasets for El Salvador and Costa Rica in order to see how deaths (response variable) are related to the cases reported and time (predictor variables). 
+
+```{r pop_case_model}
+# Create a linear regression model with deaths as a response variable
+# and cases and date as the predictor variables for El Salvador
+lm_sv <- lm(deaths ~ cases + date, data = global.sv)
+summary(lm_sv)
+
+# Create a linear regression model with deaths as a response variable
+# and cases and date as the predictor variables for Costa Rica
+lm_cr <- lm(deaths ~ cases + date, data = global.cr)
+summary(lm_cr)
+```
+
+According to these simple linear regression models, both date and number of reported cases are significant predictors to the model with a response variable of deaths. This can be seen in the very small p-values (significantly less than an $\alpha = 0.05$ which would indicate relevancy to the model). On the other hand, for Cost Rica the predictor cases has a p-value of 0.394 which would indicate that it is not significant to the proposed linear model.
+
+# Project Step 4: Conclusion and Bias Identification
+
+Although it is difficult to come to many firm conclusions from this limited analysis, more importantly we have identified some areas for future study. Our data visualizations and models lead me to ask the following questions for further investigation:
+
+1. What are the political factors that have contributed to the different levels of cases and reporting in the 7 Central American countries? These nations share many similar characteristics in terms of climate, geography, race, and heritage, yet there are stark contrasts in the level of per capita cases in each of the nations. This is especially apparent in Nicaragua where the per capita rate of cases remained close to zero for most of the pandemic. Is this due to better policy, or politically motivated reporting, or lack of infrastructure to report, or are there other contributing factors?
+
+2. Why was there a much higher death rate in El Salvador compared to Costa Rica in relation to the number of cases reported? Is this due to poor reporting policies, or the lack of adequate medical response, or are there other factors that have contributed to this difference? Why, in the case of Costa Rica, does it appear that deaths are more relevantly explained by time than by number of cases? Does indicate better or worse management of the COVID19 outbreak in the two countries?
+
+3. We could also look at the remaining nations in Central America and/or compare them to other geograpahical regions of the world to see if there are differences in the number and velocity of COVID19 cases and deaths.
+
+### Bias Identification
+
+It is important to recognize that because we all bring our own personalities, experiences, and characteristics with us when we study, we can easily find ourselves with a biased perspective on the information that we are analyzing. In this case I can see a few personal biases that are important to be conscious of when preparing, analyzing or drawing conclusions from the dataset:
+
+1. Probably most important is that we all lived in a certain context during the COVID19 pandemic. In my case I resided in El Salvador during that time period. This has the potential for me to question the motives, whether political, social, or economic for each government's response to the pandemic. Although it is a good thing to not always take data at face value, and question its veracity, there is a fine balance between questioning and reading in one's own experiences into projecting causal relationships.
+
+2. There is also often a general sense that the economic global powers can make better decisions and better use of their resources in times of crisis, but we need to be careful that we don't use that as a filter when working with a region that has a much smaller GDP per capita than many of the Western nations. Even with the region itself, countries like Costa Rica tends to have a higher standard of living than countries like Nicaragua or El Salvador, so was there COVID response better because of these economic capabilities? It is important not to bias our information or our searching with these preconceived notions.
+
+3. A final source of basis is really to ensure that we don't draw conclusions too quickly with the limited information at hand. These issues are complex and intertwined with many other social, political, and economic factors thoughout the world, so we need to be certain that it will be difficult to come to exact conclusions. Rather we may narrow focus and propose avenues of furhter exploration.
+
+```{r sessionInfo}
+sessionInfo()
+```
+
